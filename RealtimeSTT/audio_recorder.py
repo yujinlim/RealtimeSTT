@@ -159,6 +159,7 @@ class AudioToTextRecorder:
                  sample_rate: int = SAMPLE_RATE,
                  initial_prompt: Optional[Union[str, Iterable[int]]] = None,
                  suppress_tokens: Optional[List[int]] = [-1],
+                 return_whisper_segments: bool = False,
                  ):
         """
         Initializes an audio recorder and  transcription
@@ -339,6 +340,8 @@ class AudioToTextRecorder:
             prompt to be fed to the transcription models.
         - suppress_tokens (list of int, default=[-1]): Tokens to be suppressed
             from the transcription output.
+        - return_whisper_segments (bool, default=False): If set to True, the system
+            will return whisper_segments on transcribe function
 
         Raises:
             Exception: Errors related to initializing transcription
@@ -390,6 +393,7 @@ class AudioToTextRecorder:
         self.beam_size = beam_size
         self.beam_size_realtime = beam_size_realtime
         self.allowed_latency_limit = ALLOWED_LATENCY_LIMIT
+        self.return_whisper_segments = return_whisper_segments
 
         self.level = level
         self.audio_queue = mp.Queue()
@@ -805,7 +809,7 @@ class AudioToTextRecorder:
                         )
                         transcription = " ".join(seg.text for seg in segments)
                         transcription = transcription.strip()
-                        conn.send(('success', (transcription, info)))
+                        conn.send(('success', (transcription, info, segments)))
                     except Exception as e:
                         logging.error(f"General transcription error: {e}")
                         conn.send(('error', str(e)))
@@ -1088,7 +1092,7 @@ class AudioToTextRecorder:
         with self.transcription_lock:
             try:
                 self.parent_transcription_pipe.send((self.audio, self.language))
-                status, result = self.parent_transcription_pipe.recv()
+                status, result, whisper_segments = self.parent_transcription_pipe.recv()
                 self._set_state("inactive")
                 if status == 'success':
                     segments, info = result
@@ -1098,7 +1102,10 @@ class AudioToTextRecorder:
                     transcription = self._preprocess_output(segments)
                     end_time = time.time()  # End timing
                     transcription_time = end_time - start_time
+                    logging.debug(f"Transcription time: {transcription_time:.2f} seconds")
                     # print(f"Model {self.main_model_type} completed transcription in {transcription_time:.2f} seconds")
+                    if self.return_whisper_segments:
+                        return (transcription, whisper_segments,)
                     return transcription
                 else:
                     logging.error(f"Transcription error: {result}")
@@ -1594,7 +1601,7 @@ class AudioToTextRecorder:
                                 if self.parent_transcription_pipe.poll(timeout=5):  # Wait for 5 seconds
                                     status, result = self.parent_transcription_pipe.recv()
                                     if status == 'success':
-                                        segments, info = result
+                                        segments, info, _ = result
                                         self.detected_realtime_language = info.language if info.language_probability > 0 else None
                                         self.detected_realtime_language_probability = info.language_probability
                                         realtime_text = segments
